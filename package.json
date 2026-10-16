@@ -1,0 +1,38 @@
+{
+	"name": "pi-smart-compaction",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Pi extension: cache-aware compaction when an idle session is resumed.",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"compaction",
+		"prompt-cache"
+	],
+	"type": "module",
+	"license": "MIT",
+	"author": "nplez1",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/nplez1/pi-smart-compaction.git"
+	},
+	"files": [
+		"index.ts",
+		"decision.ts",
+		"config.ts",
+		"README.md",
+		"LICENSE"
+	],
+	"scripts": {
+		"test": "node --import ./test/register-resolve-ts.mjs --test test/*.test.mjs"
+	},
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*"
+	}
+}
