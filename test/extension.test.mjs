@@ -30,13 +30,19 @@ function makeFakePi() {
 	};
 }
 
-function makeCtx({ tokens = 200_000, idle = true, promptCache = { short: 300 } } = {}) {
+function makeCtx({
+	tokens = 200_000,
+	idle = true,
+	promptCache = { short: 300 },
+	provider = "anthropic",
+	id = "claude-sonnet-5",
+} = {}) {
 	const state = { compactCalls: 0, status: undefined, notifications: [] };
 	const ctx = {
 		mode: "tui",
 		hasUI: true,
 		isIdle: () => idle,
-		model: { promptCache },
+		model: { provider, id, promptCache },
 		getContextUsage: () => ({ tokens, contextWindow: 200_000, percent: null }),
 		sessionManager: { getBranch: () => [] },
 		ui: {
@@ -147,4 +153,66 @@ test("the model's cache TTL is the default idle threshold, config overrides it",
 	await fire(pi, "session_start", ctx);
 	await fireInput(pi, { text: "hi", source: "interactive" }, ctx);
 	assert.equal(state.compactCalls, 0);
+});
+
+test("DeepSeek's long-lived cache keeps a 10-minute resume from compacting", async () => {
+	const pi = makeFakePi();
+	smartCompaction(pi);
+	// DeepSeek declares no promptCache; its disk cache lives for hours-to-days.
+	const { ctx, state } = makeCtx({
+		tokens: 200_000,
+		provider: "deepseek",
+		id: "deepseek-flash",
+		promptCache: null, // DeepSeek declares none
+	});
+	ctx.sessionManager.getBranch = () => oldAssistantBranch(11 * 60_000);
+	await fire(pi, "session_start", ctx);
+
+	await fireInput(pi, { text: "carry on", source: "interactive" }, ctx);
+	assert.equal(state.compactCalls, 0, "a 11-minute gap is still a warm DeepSeek cache");
+	assert.match(state.status, /idle≥24\.0h/);
+});
+
+test("DeepSeek still compacts once its cache is genuinely cold", async () => {
+	const pi = makeFakePi();
+	smartCompaction(pi);
+	const { ctx, state } = makeCtx({
+		tokens: 200_000,
+		provider: "deepseek",
+		id: "deepseek-flash",
+		promptCache: null, // DeepSeek declares none
+	});
+	ctx.sessionManager.getBranch = () => oldAssistantBranch(30 * 3600_000);
+	await fire(pi, "session_start", ctx);
+
+	await fireInput(pi, { text: "pick this back up", source: "interactive" }, ctx);
+	assert.equal(state.compactCalls, 1);
+	assert.match(state.notifications.at(-1), /after 30\.0h idle/);
+});
+
+test("idleThresholdByModel from the config file widens or narrows the gate", async (t) => {
+	const { mkdtempSync, writeFileSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const dir = mkdtempSync(join(tmpdir(), "smart-compaction-"));
+	const file = join(dir, "config.json");
+	t.after(() => {
+		delete process.env.PI_SMART_COMPACTION_CONFIG;
+	});
+	process.env.PI_SMART_COMPACTION_CONFIG = file;
+
+	// Force a 2h threshold for DeepSeek: a 3h gap now compacts.
+	writeFileSync(file, JSON.stringify({ idleThresholdByModel: { "deepseek/*": 2 * 3600_000 } }));
+	const pi = makeFakePi();
+	smartCompaction(pi);
+	const { ctx, state } = makeCtx({
+		tokens: 200_000,
+		provider: "deepseek",
+		id: "deepseek-flash",
+		promptCache: null, // DeepSeek declares none
+	});
+	ctx.sessionManager.getBranch = () => oldAssistantBranch(3 * 3600_000);
+	await fire(pi, "session_start", ctx);
+	await fireInput(pi, { text: "go", source: "interactive" }, ctx);
+	assert.equal(state.compactCalls, 1);
 });

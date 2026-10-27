@@ -30,6 +30,17 @@ python3 scripts/analyze-sessions.py --ser-frac 1.0
 2000 characters, so the summarizer's input is smaller than the context it
 compacts. `1.0` is the conservative bound (no truncation benefit).
 
+**Measurement caveat (added with the 24h DeepSeek policy).** Step 3 treats every
+gap over 5 minutes as a cache miss, and step 4 derives rates from what each turn
+actually paid. On DeepSeek, whose on-disk cache survives hours to days, many of
+those "resumes" were in reality cache reads; the turns that did pay full price
+are visible in their own cost breakdown, but the modelled compaction benefit for
+the `deepseek/*` rows is an **upper bound**. The plugin now uses a 24h idle
+threshold for DeepSeek (`PROVIDER_TTL_MS`), so it no longer treats a same-day
+resume as cold. The dollar figures below still hold for genuinely cold resumes —
+the class of session the gate is meant to catch — but the DeepSeek contribution
+should be read as a ceiling, not an expectation.
+
 ## Results
 
 | Quantity | Value |

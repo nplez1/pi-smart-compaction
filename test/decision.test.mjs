@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import {
 	DEFAULT_CONTEXT_FLOOR_TOKENS,
 	DEFAULT_TTL_MS,
+	PROVIDER_TTL_MS,
 	evaluateGate,
 	formatIdle,
 	formatTokens,
-	resolveTtlMs,
+	resolveCacheTtl,
 } from "../decision.ts";
 import { normalizeConfig, DEFAULT_CONFIG } from "../config.ts";
 
@@ -59,15 +60,66 @@ test("floor boundary is inclusive", () => {
 	assert.equal(evaluateGate({ ...base, contextTokens: base.floorTokens - 1 }).compact, false);
 });
 
-test("resolveTtlMs: explicit config wins", () => {
-	assert.equal(resolveTtlMs({ short: 3600 }, 60_000), 60_000);
+test("resolveCacheTtl: explicit config wins over everything", () => {
+	const model = { provider: "deepseek", id: "deepseek-flash", promptCache: { short: 3600 } };
+	assert.deepEqual(
+		resolveCacheTtl(model, { configuredMs: 60_000, byModel: { "deepseek/*": 12 * 3600_000 } }),
+		{ ms: 60_000, source: "configured" },
+	);
 });
 
-test("resolveTtlMs: model short tier in seconds, else the default", () => {
-	assert.equal(resolveTtlMs({ short: 300 }), 300_000);
-	assert.equal(resolveTtlMs({}), DEFAULT_TTL_MS);
-	assert.equal(resolveTtlMs(undefined), DEFAULT_TTL_MS);
-	assert.equal(resolveTtlMs({ long: 3600 }), DEFAULT_TTL_MS);
+test("resolveCacheTtl: a per-model override beats the provider policy", () => {
+	const model = { provider: "deepseek", id: "deepseek-v4-pro" };
+	assert.deepEqual(
+		resolveCacheTtl(model, { byModel: { "deepseek/deepseek-v4-pro": 3 * 3600_000 } }),
+		{ ms: 3 * 3600_000, source: "model-override" },
+	);
+	// Bare id and provider keys match too.
+	assert.deepEqual(resolveCacheTtl(model, { byModel: { "deepseek-v4-pro": 7_200_000 } }), {
+		ms: 7_200_000,
+		source: "model-override",
+	});
+	assert.deepEqual(resolveCacheTtl(model, { byModel: { deepseek: 7_200_000 } }), {
+		ms: 7_200_000,
+		source: "model-override",
+	});
+});
+
+test("resolveCacheTtl: the most specific override wins regardless of key order", () => {
+	const model = { provider: "deepseek", id: "deepseek-flash" };
+	for (const byModel of [
+		{ "*": 60_000, "deepseek/*": 12 * 3600_000, "deepseek/deepseek-flash": 3 * 3600_000 },
+		{ "deepseek/deepseek-flash": 3 * 3600_000, "deepseek/*": 12 * 3600_000, "*": 60_000 },
+	]) {
+		assert.equal(resolveCacheTtl(model, { byModel }).ms, 3 * 3600_000);
+	}
+});
+
+test("resolveCacheTtl: a declared model lifetime beats the provider policy", () => {
+	const model = { provider: "deepseek", id: "deepseek-flash", promptCache: { short: 300 } };
+	assert.deepEqual(resolveCacheTtl(model), { ms: 300_000, source: "model-declared" });
+});
+
+test("resolveCacheTtl: DeepSeek waits a day by default", () => {
+	const model = { provider: "deepseek", id: "deepseek-flash" };
+	assert.equal(PROVIDER_TTL_MS.deepseek, 24 * 3600_000);
+	assert.deepEqual(resolveCacheTtl(model), { ms: 24 * 3600_000, source: "provider-policy" });
+});
+
+test("resolveCacheTtl: unknown providers and models fall back to 5 minutes", () => {
+	assert.deepEqual(resolveCacheTtl({ provider: "fireworks", id: "glm" }), {
+		ms: DEFAULT_TTL_MS,
+		source: "default",
+	});
+	assert.deepEqual(resolveCacheTtl(undefined), { ms: DEFAULT_TTL_MS, source: "default" });
+});
+
+test("resolveCacheTtl: ignores invalid overrides", () => {
+	const model = { provider: "fireworks", id: "glm" };
+	assert.deepEqual(resolveCacheTtl(model, { configuredMs: 0, byModel: { "*": Number.NaN } }), {
+		ms: DEFAULT_TTL_MS,
+		source: "default",
+	});
 });
 
 test("normalizeConfig drops invalid fields and keeps valid ones", () => {
@@ -82,9 +134,19 @@ test("normalizeConfig drops invalid fields and keeps valid ones", () => {
 		enabled: false,
 		contextFloorTokens: DEFAULT_CONFIG.contextFloorTokens,
 		idleThresholdMs: undefined,
+		idleThresholdByModel: undefined,
 		notify: DEFAULT_CONFIG.notify,
 		status: false,
 	});
+});
+
+test("normalizeConfig keeps valid per-model thresholds and drops the rest", () => {
+	const cfg = normalizeConfig({
+		idleThresholdByModel: { " deepseek/* ": 86400000, xiaomi: -1, "": 5, fireworks: "glm" },
+	});
+	assert.deepEqual(cfg.idleThresholdByModel, { "deepseek/*": 86400000 });
+	assert.equal(normalizeConfig({ idleThresholdByModel: [] }).idleThresholdByModel, undefined);
+	assert.equal(normalizeConfig({ idleThresholdByModel: {} }).idleThresholdByModel, undefined);
 });
 
 test("normalizeConfig tolerates non-objects", () => {

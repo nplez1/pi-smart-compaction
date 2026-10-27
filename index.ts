@@ -16,6 +16,10 @@
  * the cache is warm buys nothing over compacting at resume, and would waste a
  * summary on sessions that are never resumed.
  *
+ * The idle threshold is model-aware: a declared `promptCache.short` wins, a
+ * provider with a long-lived server-side cache (DeepSeek, 24h) uses that
+ * policy, and everything else falls back to 5 minutes. See decision.ts.
+ *
  * Summarization itself is left to pi's default compaction path; this extension
  * only decides *when* to invoke it.
  *
@@ -30,7 +34,14 @@ import type {
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { configPath, loadConfig, type SmartCompactionConfig } from "./config.js";
-import { evaluateGate, formatIdle, formatTokens, resolveTtlMs } from "./decision.js";
+import {
+	evaluateGate,
+	formatIdle,
+	formatTokens,
+	resolveCacheTtl,
+	type TtlResolution,
+	type TtlSource,
+} from "./decision.js";
 
 const ENTRY_TYPE = "smart-compaction";
 const STATUS_KEY = "smart-compaction";
@@ -74,9 +85,28 @@ function setStatus(ctx: ExtensionContext, config: SmartCompactionConfig, text: s
 	}
 }
 
+/** Resolve the idle threshold for the session's current model and config. */
+function idleThreshold(ctx: ExtensionContext, config: SmartCompactionConfig): TtlResolution {
+	return resolveCacheTtl(ctx.model, {
+		configuredMs: config.idleThresholdMs,
+		byModel: config.idleThresholdByModel,
+	});
+}
+
+function ttlSourceLabel(ttl: TtlResolution, ctx: ExtensionContext): string {
+	const labels: Record<TtlSource, string> = {
+		configured: "configured idleThresholdMs",
+		"model-override": "idleThresholdByModel",
+		"model-declared": "model promptCache",
+		"provider-policy": `${ctx.model?.provider ?? "provider"} cache policy`,
+		default: "default (no declared cache lifetime)",
+	};
+	return labels[ttl.source];
+}
+
 function armedStatus(ctx: ExtensionContext, config: SmartCompactionConfig): string {
-	const ttl = resolveTtlMs(ctx.model?.promptCache, config.idleThresholdMs);
-	return `armed · ≥${formatTokens(config.contextFloorTokens)} · idle≥${formatIdle(ttl)}`;
+	const ttl = idleThreshold(ctx, config);
+	return `armed · ≥${formatTokens(config.contextFloorTokens)} · idle≥${formatIdle(ttl.ms)}`;
 }
 
 function notify(ctx: ExtensionContext, config: SmartCompactionConfig, message: string, type: "info" | "warning" | "error"): void {
@@ -172,7 +202,7 @@ export default function (pi: ExtensionAPI) {
 		if (!config.enabled || event.source === "extension" || event.streamingBehavior !== undefined || !ctx.isIdle() || compacting) {
 			return { action: "continue" };
 		}
-		const ttlMs = resolveTtlMs(ctx.model?.promptCache, config.idleThresholdMs);
+		const ttlMs = idleThreshold(ctx, config).ms;
 		const idleMs = lastActivityAt === null ? null : Date.now() - lastActivityAt;
 		const decision = evaluateGate({
 			enabled: config.enabled,
@@ -197,12 +227,13 @@ export default function (pi: ExtensionAPI) {
 				await compactNow(pi, ctx, config, idleMs);
 				return;
 			}
-			const ttlMs = resolveTtlMs(ctx.model?.promptCache, config.idleThresholdMs);
+			const ttl = idleThreshold(ctx, config);
 			const usage = ctx.getContextUsage();
 			const idleMs = lastActivityAt === null ? null : Date.now() - lastActivityAt;
 			const lines = [
 				`pi-smart-compaction: ${config.enabled ? "enabled" : "disabled"}`,
-				`floor: ${formatTokens(config.contextFloorTokens)} tokens · idle threshold: ${formatIdle(ttlMs)}${config.idleThresholdMs === undefined ? " (model cache TTL)" : " (configured)"}`,
+				`model: ${ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "unknown"}`,
+				`floor: ${formatTokens(config.contextFloorTokens)} tokens · idle threshold: ${formatIdle(ttl.ms)} (${ttlSourceLabel(ttl, ctx)})`,
 				`context: ${usage?.tokens !== undefined && usage?.tokens !== null ? `${formatTokens(usage.tokens)} tokens` : "unknown"}`,
 				`idle: ${idleMs === null ? "unknown" : formatIdle(idleMs)}`,
 				`config: ${configPath()} · /smart-compaction force to compact now`,

@@ -22,6 +22,24 @@ export const DEFAULT_CONTEXT_FLOOR_TOKENS = 60_000;
 /** Fallback idle threshold when the model declares no prompt-cache lifetime. */
 export const DEFAULT_TTL_MS = 5 * 60 * 1000;
 
+/**
+ * Idle thresholds for providers whose server-side prompt cache outlives the
+ * 5-minute fallback. Keyed by provider id, in milliseconds.
+ *
+ * DeepSeek caches every prompt on disk by default and keeps a cached prefix
+ * until it has gone unused for "a few hours to a few days"
+ * (https://api-docs.deepseek.com/guides/kv_cache/). Its cache-hit rate is about
+ * 1/50 of the miss rate and cache writes are free, so a resume ten minutes
+ * later is an ordinary cheap cache read. Treating that as a miss pays a
+ * full-price summary *and* throws the cached prefix away, because the summary
+ * starts a fresh prefix. 24h is a deliberately conservative reading of "hours
+ * to days": it still compacts genuinely cold sessions, but never a same-day
+ * one. Per-model overrides are available via `idleThresholdByModel`.
+ */
+export const PROVIDER_TTL_MS: Readonly<Record<string, number>> = {
+	deepseek: 24 * 60 * 60 * 1000,
+};
+
 export type GateReason =
 	| "disabled"
 	| "no-context"
@@ -74,20 +92,104 @@ export interface PromptCacheLike {
 	long?: number;
 }
 
+/** The parts of a pi model this module needs; all optional so tests stay small. */
+export interface CacheModelLike {
+	id?: string;
+	provider?: string;
+	promptCache?: PromptCacheLike;
+}
+
+/** Where the idle threshold came from, for the status line and `/smart-compaction`. */
+export type TtlSource =
+	| "configured"
+	| "model-override"
+	| "model-declared"
+	| "provider-policy"
+	| "default";
+
+export interface TtlResolution {
+	ms: number;
+	source: TtlSource;
+}
+
+export interface TtlOptions {
+	/** Global override (`idleThresholdMs`). */
+	configuredMs?: number;
+	/** Per-model overrides (`idleThresholdByModel`), keyed by pattern. */
+	byModel?: Readonly<Record<string, number>>;
+}
+
+function positiveMs(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/** Glob match where `*` is the only wildcard, case-insensitive. */
+function matchesPattern(pattern: string, value: string): boolean {
+	const escaped = pattern.toLowerCase().replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+	return new RegExp(`^${escaped}$`).test(value);
+}
+
+/** Characters a pattern pins down; used to make "most specific wins" order-independent. */
+function specificity(pattern: string): number {
+	return pattern.replace(/\*/g, "").length;
+}
+
 /**
- * Resolve the idle threshold. An explicit configured value always wins; otherwise
- * use the model's declared short-tier cache lifetime; otherwise the 5-minute
- * default that matches pi's own cache-stats assumption.
+ * Resolve a per-model override against `provider/modelId`, the bare model id, or
+ * the provider id. The most specific matching pattern wins, so config key order
+ * does not matter.
  */
-export function resolveTtlMs(promptCache: PromptCacheLike | undefined, configuredMs?: number): number {
-	if (typeof configuredMs === "number" && Number.isFinite(configuredMs) && configuredMs > 0) {
-		return configuredMs;
+function matchModelTtl(
+	model: CacheModelLike | undefined,
+	byModel: Readonly<Record<string, number>> | undefined,
+): number | undefined {
+	if (!model || !byModel) return undefined;
+	const keys = new Set<string>();
+	const id = model.id?.trim();
+	const provider = model.provider?.trim();
+	if (provider && id) keys.add(`${provider}/${id}`);
+	if (id) keys.add(id);
+	if (provider) keys.add(provider);
+	if (keys.size === 0) return undefined;
+	const entries = Object.entries(byModel)
+		.map(([pattern, ms]) => [pattern, positiveMs(ms)] as const)
+		.filter((entry): entry is readonly [string, number] => entry[1] !== undefined)
+		.sort(([a], [b]) => specificity(b) - specificity(a));
+	for (const [pattern, ms] of entries) {
+		for (const key of keys) {
+			if (matchesPattern(pattern, key)) return ms;
+		}
 	}
-	const short = promptCache?.short;
-	if (typeof short === "number" && Number.isFinite(short) && short > 0) {
-		return short * 1000;
-	}
-	return DEFAULT_TTL_MS;
+	return undefined;
+}
+
+/**
+ * Resolve the idle threshold, most authoritative source first:
+ *
+ * 1. the global `idleThresholdMs` override;
+ * 2. a matching `idleThresholdByModel` override;
+ * 3. the model's declared `promptCache.short` (seconds);
+ * 4. a built-in provider policy (`PROVIDER_TTL_MS`, e.g. DeepSeek 24h);
+ * 5. the 5-minute default that matches pi's own cache-stats assumption.
+ *
+ * The provider policy sits below the model declaration because a catalog that
+ * states its cache lifetime is more current than this table.
+ */
+export function resolveCacheTtl(model: CacheModelLike | undefined, options: TtlOptions = {}): TtlResolution {
+	const configured = positiveMs(options.configuredMs);
+	if (configured !== undefined) return { ms: configured, source: "configured" };
+
+	const override = matchModelTtl(model, options.byModel);
+	if (override !== undefined) return { ms: override, source: "model-override" };
+
+	const declaredSeconds = positiveMs(model?.promptCache?.short);
+	if (declaredSeconds !== undefined) return { ms: declaredSeconds * 1000, source: "model-declared" };
+
+	const provider = model?.provider?.trim().toLowerCase();
+	const policy = provider ? positiveMs(PROVIDER_TTL_MS[provider]) : undefined;
+	if (policy !== undefined) return { ms: policy, source: "provider-policy" };
+
+	return { ms: DEFAULT_TTL_MS, source: "default" };
 }
 
 /** Human-readable idle duration, e.g. `3.4h`, `12m`, `45s`. */
