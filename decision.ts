@@ -34,10 +34,22 @@ export const DEFAULT_TTL_MS = 5 * 60 * 1000;
  * full-price summary *and* throws the cached prefix away, because the summary
  * starts a fresh prefix. 24h is a deliberately conservative reading of "hours
  * to days": it still compacts genuinely cold sessions, but never a same-day
- * one. Per-model overrides are available via `idleThresholdByModel`.
+ * one. OpenAI's prompt cache lifetime is 30 minutes. Per-model overrides are
+ * available via `idleThresholdByModel`.
  */
 export const PROVIDER_TTL_MS: Readonly<Record<string, number>> = {
 	deepseek: 24 * 60 * 60 * 1000,
+	openai: 30 * 60 * 1000,
+};
+
+/**
+ * Built-in model policies for providers that multiplex models from different
+ * vendors. GitHub Copilot exposes OpenAI models as `github-copilot/gpt-*`, but
+ * also exposes Claude, Gemini, Grok, and other model families, so the provider
+ * alone is not specific enough for an OpenAI cache policy.
+ */
+export const MODEL_TTL_MS: Readonly<Record<string, number>> = {
+	"github-copilot/gpt-*": 30 * 60 * 1000,
 };
 
 export type GateReason =
@@ -104,6 +116,7 @@ export type TtlSource =
 	| "configured"
 	| "model-override"
 	| "model-declared"
+	| "model-policy"
 	| "provider-policy"
 	| "default";
 
@@ -169,8 +182,9 @@ function matchModelTtl(
  * 1. the global `idleThresholdMs` override;
  * 2. a matching `idleThresholdByModel` override;
  * 3. the model's declared `promptCache.short` (seconds);
- * 4. a built-in provider policy (`PROVIDER_TTL_MS`, e.g. DeepSeek 24h);
- * 5. the 5-minute default that matches pi's own cache-stats assumption.
+ * 4. a built-in model policy (`MODEL_TTL_MS`, e.g. GitHub Copilot's `gpt-*` models: 30m);
+ * 5. a built-in provider policy (`PROVIDER_TTL_MS`, e.g. DeepSeek 24h or OpenAI 30m);
+ * 6. the 5-minute default that matches pi's own cache-stats assumption.
  *
  * The provider policy sits below the model declaration because a catalog that
  * states its cache lifetime is more current than this table.
@@ -184,6 +198,9 @@ export function resolveCacheTtl(model: CacheModelLike | undefined, options: TtlO
 
 	const declaredSeconds = positiveMs(model?.promptCache?.short);
 	if (declaredSeconds !== undefined) return { ms: declaredSeconds * 1000, source: "model-declared" };
+
+	const modelPolicy = matchModelTtl(model, MODEL_TTL_MS);
+	if (modelPolicy !== undefined) return { ms: modelPolicy, source: "model-policy" };
 
 	const provider = model?.provider?.trim().toLowerCase();
 	const policy = provider ? positiveMs(PROVIDER_TTL_MS[provider]) : undefined;

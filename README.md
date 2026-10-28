@@ -78,8 +78,9 @@ Resolved from the most authoritative source first:
 1. `idleThresholdMs` from the config file (global override);
 2. a matching `idleThresholdByModel` entry;
 3. the model's declared `promptCache.short` (what Anthropic models carry);
-4. a **built-in provider policy** — DeepSeek: **24 hours**;
-5. the 5-minute fallback that matches pi's own cache-stats assumption.
+4. a **built-in model policy** — GitHub Copilot's `gpt-*` models: **30 minutes**;
+5. a **built-in provider policy** — DeepSeek: **24 hours**; direct OpenAI: **30 minutes**;
+6. the 5-minute fallback that matches pi's own cache-stats assumption.
 
 ## Long-lived caches: DeepSeek waits a day
 
@@ -96,8 +97,12 @@ summary begins a new prefix. The provider policy is therefore 24h: conservative
 within DeepSeek's "hours to days" window, and still compacting a session you
 actually left overnight plus a day.
 
-Use `idleThresholdByModel` to tune it for one model (`{"deepseek/deepseek-v4-pro":
-43200000}` for 12h) or to teach the extension about another provider.
+OpenAI prompt caches last 30 minutes, so OpenAI resumes are treated as warm until
+that threshold passes. This includes `gpt-*` models served through the
+`github-copilot` provider; other Copilot model families are not classified as
+OpenAI. Use `idleThresholdByModel` to tune it for one model
+(`{"deepseek/deepseek-v4-pro": 43200000}` for 12h) or to teach the extension about
+another provider.
 
 ## Configuration
 
@@ -156,9 +161,10 @@ The pure gate (`decision.ts`) and the registered-handler wiring
 - The gate cannot know how many turns a resumed burst will contain. It uses a
   fixed context floor rather than predicting burst length, which is why very
   short resumes lose the summary cost (a few tenths of a cent).
-- The built-in DeepSeek policy is a single 24h estimate for a provider that
-  documents "a few hours to a few days". A provider that declares its own
-  `promptCache` lifetime overrides it, and `idleThresholdByModel` tunes it.
+- The built-in policies cover DeepSeek at 24h (a conservative estimate for its
+  documented "few hours to a few days"), direct OpenAI at 30m, and `gpt-*`
+  models served by GitHub Copilot at 30m. A model that declares its own
+  `promptCache` lifetime overrides them, and `idleThresholdByModel` tunes them.
 - Only the session's own model cache lifetime is used for the idle threshold; a
   model that declares no `promptCache` on an unfamiliar provider falls back to
   pi's 5-minute assumption.

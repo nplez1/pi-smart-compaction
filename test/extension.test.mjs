@@ -173,6 +173,24 @@ test("DeepSeek's long-lived cache keeps a 10-minute resume from compacting", asy
 	assert.match(state.status, /idle≥24\.0h/);
 });
 
+test("GitHub Copilot's OpenAI cache keeps a 29-minute resume from compacting", async () => {
+	const pi = makeFakePi();
+	smartCompaction(pi);
+	// Copilot multiplexes vendors; identify this as OpenAI by its gpt-* model ID.
+	const { ctx, state } = makeCtx({
+		tokens: 200_000,
+		provider: "github-copilot",
+		id: "gpt-5.4",
+		promptCache: null,
+	});
+	ctx.sessionManager.getBranch = () => oldAssistantBranch(29 * 60_000);
+	await fire(pi, "session_start", ctx);
+
+	await fireInput(pi, { text: "carry on", source: "interactive" }, ctx);
+	assert.equal(state.compactCalls, 0, "a 29-minute gap is still a warm OpenAI cache");
+	assert.match(state.status, /idle≥30m/);
+});
+
 test("DeepSeek still compacts once its cache is genuinely cold", async () => {
 	const pi = makeFakePi();
 	smartCompaction(pi);

@@ -16,9 +16,11 @@
  * the cache is warm buys nothing over compacting at resume, and would waste a
  * summary on sessions that are never resumed.
  *
- * The idle threshold is model-aware: a declared `promptCache.short` wins, a
- * provider with a long-lived server-side cache (DeepSeek, 24h) uses that
- * policy, and everything else falls back to 5 minutes. See decision.ts.
+ * The idle threshold is model-aware: a declared `promptCache.short` wins,
+ * built-in model policies identify OpenAI `gpt-*` models served by GitHub
+ * Copilot (30m), providers with known cache lifetimes (DeepSeek, 24h; OpenAI,
+ * 30m) use those policies, and everything else falls back to 5 minutes. See
+ * decision.ts.
  *
  * Summarization itself is left to pi's default compaction path; this extension
  * only decides *when* to invoke it.
@@ -98,6 +100,7 @@ function ttlSourceLabel(ttl: TtlResolution, ctx: ExtensionContext): string {
 		configured: "configured idleThresholdMs",
 		"model-override": "idleThresholdByModel",
 		"model-declared": "model promptCache",
+		"model-policy": "built-in model cache policy",
 		"provider-policy": `${ctx.model?.provider ?? "provider"} cache policy`,
 		default: "default (no declared cache lifetime)",
 	};

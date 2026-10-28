@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
 	DEFAULT_CONTEXT_FLOOR_TOKENS,
 	DEFAULT_TTL_MS,
+	MODEL_TTL_MS,
 	PROVIDER_TTL_MS,
 	evaluateGate,
 	formatIdle,
@@ -104,6 +105,31 @@ test("resolveCacheTtl: DeepSeek waits a day by default", () => {
 	const model = { provider: "deepseek", id: "deepseek-flash" };
 	assert.equal(PROVIDER_TTL_MS.deepseek, 24 * 3600_000);
 	assert.deepEqual(resolveCacheTtl(model), { ms: 24 * 3600_000, source: "provider-policy" });
+});
+
+test("resolveCacheTtl: OpenAI waits 30 minutes by default", () => {
+	const model = { provider: "OpenAI", id: "gpt-4.1" };
+	assert.equal(PROVIDER_TTL_MS.openai, 30 * 60_000);
+	assert.deepEqual(resolveCacheTtl(model), { ms: 30 * 60_000, source: "provider-policy" });
+});
+
+test("resolveCacheTtl: GitHub Copilot OpenAI models use 30 minutes", () => {
+	assert.equal(MODEL_TTL_MS["github-copilot/gpt-*"], 30 * 60_000);
+	assert.deepEqual(resolveCacheTtl({ provider: "github-copilot", id: "gpt-5.4" }), {
+		ms: 30 * 60_000,
+		source: "model-policy",
+	});
+	assert.deepEqual(resolveCacheTtl({ provider: "github-copilot", id: "gpt-5.3-codex" }), {
+		ms: 30 * 60_000,
+		source: "model-policy",
+	});
+});
+
+test("resolveCacheTtl: GitHub Copilot non-OpenAI models do not use OpenAI policy", () => {
+	assert.deepEqual(resolveCacheTtl({ provider: "github-copilot", id: "claude-opus-4.8" }), {
+		ms: DEFAULT_TTL_MS,
+		source: "default",
+	});
 });
 
 test("resolveCacheTtl: unknown providers and models fall back to 5 minutes", () => {
