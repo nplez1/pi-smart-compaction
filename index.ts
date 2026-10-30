@@ -41,6 +41,8 @@ import {
 	formatIdle,
 	formatTokens,
 	resolveCacheTtl,
+	resolveFloor,
+	type FloorResolution,
 	type TtlResolution,
 	type TtlSource,
 } from "./decision.js";
@@ -109,7 +111,27 @@ function ttlSourceLabel(ttl: TtlResolution, ctx: ExtensionContext): string {
 
 function armedStatus(ctx: ExtensionContext, config: SmartCompactionConfig): string {
 	const ttl = idleThreshold(ctx, config);
-	return `armed · ≥${formatTokens(config.contextFloorTokens)} · idle≥${formatIdle(ttl.ms)}`;
+	return `armed · ≥${floorLabel(floorFor(ctx, config))} · idle≥${formatIdle(ttl.ms)}`;
+}
+
+/** Resolve the token floor for the session's current model and config. */
+function floorFor(ctx: ExtensionContext, config: SmartCompactionConfig): FloorResolution {
+	return resolveFloor({
+		percent: config.contextFloorPercent,
+		floorTokens: config.contextFloorTokens,
+		// The window pi resolved for the active model — the same one /context and
+		// the footer percentage use. `ctx.model` is the fallback for a session that
+		// cannot report usage yet.
+		contextWindow: ctx.getContextUsage()?.contextWindow ?? ctx.model?.contextWindow,
+	});
+}
+
+/** `157k (15% of 1.0M)` for a window-relative floor, `60k` for a flat one. */
+function floorLabel(floor: FloorResolution): string {
+	if (floor.percent === undefined || floor.contextWindow === undefined) {
+		return `${formatTokens(floor.tokens)}`;
+	}
+	return `${formatTokens(floor.tokens)} (${floor.percent}% of ${formatTokens(floor.contextWindow)})`;
 }
 
 function notify(ctx: ExtensionContext, config: SmartCompactionConfig, message: string, type: "info" | "warning" | "error"): void {
@@ -212,7 +234,7 @@ export default function (pi: ExtensionAPI) {
 			contextTokens: ctx.getContextUsage()?.tokens,
 			idleMs,
 			ttlMs,
-			floorTokens: config.contextFloorTokens,
+			floorTokens: floorFor(ctx, config).tokens,
 		});
 		if (!decision.compact) {
 			return { action: "continue" };
@@ -236,7 +258,7 @@ export default function (pi: ExtensionAPI) {
 			const lines = [
 				`pi-smart-compaction: ${config.enabled ? "enabled" : "disabled"}`,
 				`model: ${ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "unknown"}`,
-				`floor: ${formatTokens(config.contextFloorTokens)} tokens · idle threshold: ${formatIdle(ttl.ms)} (${ttlSourceLabel(ttl, ctx)})`,
+				`floor: ${floorLabel(floorFor(ctx, config))} tokens · idle threshold: ${formatIdle(ttl.ms)} (${ttlSourceLabel(ttl, ctx)})`,
 				`context: ${usage?.tokens !== undefined && usage?.tokens !== null ? `${formatTokens(usage.tokens)} tokens` : "unknown"}`,
 				`idle: ${idleMs === null ? "unknown" : formatIdle(idleMs)}`,
 				`config: ${configPath()} · /smart-compaction force to compact now`,

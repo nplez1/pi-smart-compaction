@@ -32,6 +32,7 @@ function makeFakePi() {
 
 function makeCtx({
 	tokens = 200_000,
+	contextWindow = 200_000,
 	idle = true,
 	promptCache = { short: 300 },
 	provider = "anthropic",
@@ -43,7 +44,7 @@ function makeCtx({
 		hasUI: true,
 		isIdle: () => idle,
 		model: { provider, id, promptCache },
-		getContextUsage: () => ({ tokens, contextWindow: 200_000, percent: null }),
+		getContextUsage: () => ({ tokens, contextWindow, percent: null }),
 		sessionManager: { getBranch: () => [] },
 		ui: {
 			notify(message) {
@@ -233,4 +234,59 @@ test("idleThresholdByModel from the config file widens or narrows the gate", asy
 	await fire(pi, "session_start", ctx);
 	await fireInput(pi, { text: "go", source: "interactive" }, ctx);
 	assert.equal(state.compactCalls, 1);
+});
+
+/** Write a config file for one test and restore the default path afterwards. */
+async function withConfig(t, config) {
+	const { mkdtempSync, writeFileSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const file = join(mkdtempSync(join(tmpdir(), "smart-compaction-")), "config.json");
+	writeFileSync(file, JSON.stringify(config));
+	t.after(() => {
+		delete process.env.PI_SMART_COMPACTION_CONFIG;
+	});
+	process.env.PI_SMART_COMPACTION_CONFIG = file;
+	return file;
+}
+
+test("contextFloorPercent makes the floor a share of the model's window", async (t) => {
+	// 15% of a 200k window is a 30k floor: a 45k resume is worth compacting,
+	// where the 60k token default would have skipped it.
+	await withConfig(t, { contextFloorPercent: 15 });
+	const pi = makeFakePi();
+	smartCompaction(pi);
+	const { ctx, state } = makeCtx({ tokens: 45_000, contextWindow: 200_000 });
+	ctx.sessionManager.getBranch = () => oldAssistantBranch(3600_000);
+	await fire(pi, "session_start", ctx);
+	assert.match(state.status, /≥30k \(15% of 200k\)/);
+
+	await fireInput(pi, { text: "resume", source: "interactive" }, ctx);
+	assert.equal(state.compactCalls, 1);
+});
+
+test("the same percentage is stricter on a model with a larger window", async (t) => {
+	// 15% of a 1M window is 157k, so the 100k context waits.
+	await withConfig(t, { contextFloorPercent: 15 });
+	const pi = makeFakePi();
+	smartCompaction(pi);
+	const { ctx, state } = makeCtx({ tokens: 100_000, contextWindow: 1_048_576 });
+	ctx.sessionManager.getBranch = () => oldAssistantBranch(3600_000);
+	await fire(pi, "session_start", ctx);
+
+	await fireInput(pi, { text: "resume", source: "interactive" }, ctx);
+	assert.equal(state.compactCalls, 0);
+});
+
+test("a model with no declared window falls back to the flat token floor", async (t) => {
+	await withConfig(t, { contextFloorPercent: 15 });
+	const pi = makeFakePi();
+	smartCompaction(pi);
+	const { ctx, state } = makeCtx({ tokens: 45_000, contextWindow: 0 });
+	ctx.sessionManager.getBranch = () => oldAssistantBranch(3600_000);
+	await fire(pi, "session_start", ctx);
+	assert.match(state.status, /≥60k ·/);
+
+	await fireInput(pi, { text: "resume", source: "interactive" }, ctx);
+	assert.equal(state.compactCalls, 0, "45k is below the 60k fallback floor");
 });

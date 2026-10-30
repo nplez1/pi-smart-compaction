@@ -17,6 +17,11 @@ import { DEFAULT_CONTEXT_FLOOR_TOKENS } from "./decision.js";
 export interface SmartCompactionConfig {
 	/** Master switch. */
 	enabled: boolean;
+	/**
+	 * Share of the model's context window below which a resume is not worth
+	 * compacting, e.g. `15` for 15%. Unset keeps the flat token floor.
+	 */
+	contextFloorPercent: number | undefined;
 	/** Minimum projected context (tokens) worth compacting on resume. */
 	contextFloorTokens: number;
 	/** Idle threshold override in ms. Undefined means "use the model's cache TTL". */
@@ -35,6 +40,7 @@ export interface SmartCompactionConfig {
 
 export const DEFAULT_CONFIG: SmartCompactionConfig = {
 	enabled: true,
+	contextFloorPercent: undefined,
 	contextFloorTokens: DEFAULT_CONTEXT_FLOOR_TOKENS,
 	idleThresholdMs: undefined,
 	idleThresholdByModel: undefined,
@@ -56,6 +62,12 @@ function asPositiveNumber(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
+/** A percentage of the context window; anything outside 1-100 is a typo, not a preference. */
+function asPercent(value: unknown): number | undefined {
+	const percent = asPositiveNumber(value);
+	return percent !== undefined && percent <= 100 ? percent : undefined;
+}
+
 /** Keep only well-formed pattern → ms entries; an empty map becomes undefined. */
 function asTtlMap(value: unknown): Record<string, number> | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
@@ -75,6 +87,7 @@ export function normalizeConfig(raw: unknown): SmartCompactionConfig {
 	const floor = asPositiveNumber(obj.contextFloorTokens);
 	return {
 		enabled: asBoolean(obj.enabled, DEFAULT_CONFIG.enabled),
+		contextFloorPercent: asPercent(obj.contextFloorPercent),
 		contextFloorTokens: floor ?? DEFAULT_CONFIG.contextFloorTokens,
 		idleThresholdMs: asPositiveNumber(obj.idleThresholdMs),
 		idleThresholdByModel: asTtlMap(obj.idleThresholdByModel),

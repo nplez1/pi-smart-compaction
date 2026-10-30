@@ -82,7 +82,8 @@ serialized conversation no matter when it runs. Consequences:
   long bursts (median ~40 turns per resumed burst).
 
 Resumes followed by 0–1 turns are individually net-negative (a few tenths of a
-cent); the fixed `contextFloorTokens` gate keeps those small.
+cent); the context floor (`contextFloorPercent` of the window, or the flat
+`contextFloorTokens`) keeps those small.
 
 ## Where the money actually goes (context for the design)
 

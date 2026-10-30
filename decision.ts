@@ -76,6 +76,48 @@ export interface GateInput {
 	floorTokens: number;
 }
 
+export interface FloorInput {
+	/** Configured share of the context window, e.g. `15` for 15%. Unset means flat tokens. */
+	percent?: number | undefined;
+	/** Flat floor used when no percentage is set or the window is unknown. */
+	floorTokens: number;
+	/** The active model's context window, when known. */
+	contextWindow?: number | null;
+}
+
+export interface FloorResolution {
+	/** Token floor the gate compares against. */
+	tokens: number;
+	/** The percentage the floor came from, when it was window-relative. */
+	percent: number | undefined;
+	/** The window `percent` was applied to, when known. */
+	contextWindow: number | undefined;
+}
+
+/**
+ * Resolve the gate's token floor.
+ *
+ * A configured `contextFloorPercent` makes the floor relative to the model: 15%
+ * of a 1M window is 157k, of a 200k window 30k, so the same percentage is
+ * equally strict wherever it is applied. The flat `contextFloorTokens` remains
+ * the fallback for a config that sets no percentage and for a model that
+ * declares no window — a relative floor cannot be computed without one, and
+ * silently treating it as zero would compact every resume.
+ */
+export function resolveFloor(input: FloorInput): FloorResolution {
+	const { percent, floorTokens, contextWindow } = input;
+	const window = positiveTokens(contextWindow);
+	const share = positiveTokens(percent);
+	if (share !== undefined && window !== undefined) {
+		return { tokens: Math.round((window * share) / 100), percent: share, contextWindow: window };
+	}
+	return { tokens: floorTokens, percent: undefined, contextWindow: undefined };
+}
+
+function positiveTokens(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
 export function evaluateGate(input: GateInput): GateDecision {
 	if (!input.enabled) {
 		return { compact: false, reason: "disabled" };

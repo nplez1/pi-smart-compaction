@@ -56,7 +56,7 @@ On every user input, while the session is idle, the extension compacts first if
 | --- | --- | --- |
 | Extension enabled | `true` | config |
 | Input is a real user prompt while idle | — | not streaming, not extension-injected |
-| Projected context | `≥ 60,000` tokens | `contextFloorTokens` |
+| Projected context | `≥ 60,000` tokens | `contextFloorTokens`, or `contextFloorPercent` of the window |
 | Time since the last request | `≥` cache lifetime | see [idle threshold](#the-idle-threshold) |
 
 Compaction itself is pi's own default path — the extension does not override the
@@ -70,6 +70,22 @@ A transcript notice is written when it runs:
 
 and the footer shows `smart-compact armed · ≥60k · idle≥5m`, then the result of
 the last compaction.
+
+### The context floor
+
+Two keys set the minimum context worth compacting, and the percentage wins when
+both are present:
+
+- `contextFloorPercent` — a share of the model's *current* context window, e.g.
+  `15`. Your model set spans ~200k to 1M windows, and a fixed token floor is a
+  very different policy at each end: 60k is 30% of a 200k window but 6% of a 1M
+  one. A percentage keeps the gate equally strict wherever it lands.
+- `contextFloorTokens` (default `60000`) — the flat floor. It is used when no
+  percentage is configured, and as the fallback for a model that declares no
+  context window, since a share of an unknown window cannot be computed.
+
+The footer and `/smart-compaction` print which one is in force:
+`≥157k (15% of 1.0M)` for a relative floor, `≥60k` for the flat default.
 
 ### The idle threshold
 
@@ -111,6 +127,7 @@ Optional file at `~/.config/pi-smart-compaction/config.json`:
 ```json
 {
   "enabled": true,
+  "contextFloorPercent": 15,
   "contextFloorTokens": 60000,
   "idleThresholdMs": null,
   "idleThresholdByModel": {
@@ -124,7 +141,8 @@ Optional file at `~/.config/pi-smart-compaction/config.json`:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | Master switch. |
-| `contextFloorTokens` | `60000` | Minimum projected context worth compacting. |
+| `contextFloorPercent` | `null` | Minimum projected context as a share of the model's window, e.g. `15`. `null` uses `contextFloorTokens`. Takes precedence when the model declares a window. |
+| `contextFloorTokens` | `60000` | Minimum projected context worth compacting, when no percentage is set. |
 | `idleThresholdMs` | `null` | Global idle threshold in ms. `null` uses the model/provider lifetime below. |
 | `idleThresholdByModel` | `null` | Per-model idle thresholds in ms. Keys match `provider/modelId`, a bare model id, or a provider id; `*` is a wildcard (`deepseek/*`, `*`). The most specific match wins. |
 | `notify` | `true` | Write the durable transcript notice and toast. |
@@ -159,8 +177,9 @@ The pure gate (`decision.ts`) and the registered-handler wiring
 ## Limitations
 
 - The gate cannot know how many turns a resumed burst will contain. It uses a
-  fixed context floor rather than predicting burst length, which is why very
-  short resumes lose the summary cost (a few tenths of a cent).
+  context floor (a percentage of the window, or a flat token count) rather than
+  predicting burst length, which is why very short resumes lose the summary cost
+  (a few tenths of a cent).
 - The built-in policies cover DeepSeek at 24h (a conservative estimate for its
   documented "few hours to a few days"), direct OpenAI at 30m, and `gpt-*`
   models served by GitHub Copilot at 30m. A model that declares its own

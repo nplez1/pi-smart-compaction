@@ -9,6 +9,7 @@ import {
 	formatIdle,
 	formatTokens,
 	resolveCacheTtl,
+	resolveFloor,
 } from "../decision.ts";
 import { normalizeConfig, DEFAULT_CONFIG } from "../config.ts";
 
@@ -158,12 +159,40 @@ test("normalizeConfig drops invalid fields and keeps valid ones", () => {
 	});
 	assert.deepEqual(cfg, {
 		enabled: false,
+		contextFloorPercent: undefined,
 		contextFloorTokens: DEFAULT_CONFIG.contextFloorTokens,
 		idleThresholdMs: undefined,
 		idleThresholdByModel: undefined,
 		notify: DEFAULT_CONFIG.notify,
 		status: false,
 	});
+});
+
+test("normalizeConfig keeps a sane percentage and drops an impossible one", () => {
+	assert.equal(normalizeConfig({ contextFloorPercent: 15 }).contextFloorPercent, 15);
+	assert.equal(normalizeConfig({ contextFloorPercent: 100 }).contextFloorPercent, 100);
+	for (const bad of [0, -3, 101, Number.NaN, Number.POSITIVE_INFINITY, "15", null]) {
+		assert.equal(normalizeConfig({ contextFloorPercent: bad }).contextFloorPercent, undefined);
+	}
+});
+
+test("resolveFloor: a percentage is a share of the model's window", () => {
+	assert.deepEqual(resolveFloor({ percent: 15, floorTokens: 60_000, contextWindow: 1_048_576 }), {
+		tokens: 157_286,
+		percent: 15,
+		contextWindow: 1_048_576,
+	});
+	// The same percentage, a different window: 15% of 200k is stricter than the flat floor.
+	assert.equal(resolveFloor({ percent: 15, floorTokens: 60_000, contextWindow: 200_000 }).tokens, 30_000);
+	assert.equal(resolveFloor({ percent: 15, floorTokens: 60_000, contextWindow: 512_000 }).tokens, 76_800);
+});
+
+test("resolveFloor: falls back to the flat floor without a percentage or a window", () => {
+	const flat = { tokens: 60_000, percent: undefined, contextWindow: undefined };
+	assert.deepEqual(resolveFloor({ floorTokens: 60_000, contextWindow: 1_048_576 }), flat);
+	for (const contextWindow of [undefined, null, 0, -1, Number.NaN]) {
+		assert.deepEqual(resolveFloor({ percent: 15, floorTokens: 60_000, contextWindow }), flat);
+	}
 });
 
 test("normalizeConfig keeps valid per-model thresholds and drops the rest", () => {
