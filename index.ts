@@ -109,7 +109,12 @@ function ttlSourceLabel(ttl: TtlResolution, ctx: ExtensionContext): string {
 	return labels[ttl.source];
 }
 
+function isFusionStandard(ctx: ExtensionContext): boolean {
+	return ctx.model?.provider === "copilot-fusion" && ctx.model.id === "standard";
+}
+
 function armedStatus(ctx: ExtensionContext, config: SmartCompactionConfig): string {
+	if (isFusionStandard(ctx)) return "manual · Fusion routing";
 	const ttl = idleThreshold(ctx, config);
 	return `armed · ≥${floorLabel(floorFor(ctx, config))} · idle≥${formatIdle(ttl.ms)}`;
 }
@@ -209,6 +214,11 @@ export default function (pi: ExtensionAPI) {
 		setStatus(ctx, config, config.enabled ? armedStatus(ctx, config) : "off");
 	});
 
+	pi.on("model_select", (_event, ctx) => {
+		const config = loadConfig();
+		setStatus(ctx, config, config.enabled ? armedStatus(ctx, config) : "off");
+	});
+
 	pi.on("message_end", (event) => {
 		if (event.message.role === "assistant") {
 			lastActivityAt = Date.now();
@@ -224,7 +234,10 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("input", async (event, ctx) => {
 		const config = loadConfig();
-		if (!config.enabled || event.source === "extension" || event.streamingBehavior !== undefined || !ctx.isIdle() || compacting) {
+		// Fusion chooses a physical model only after input. Compacting here would
+		// discard context before its actual limit is known; explicit force stays
+		// available when the user really wants compaction.
+		if (!config.enabled || isFusionStandard(ctx) || event.source === "extension" || event.streamingBehavior !== undefined || !ctx.isIdle() || compacting) {
 			return { action: "continue" };
 		}
 		const ttlMs = idleThreshold(ctx, config).ms;

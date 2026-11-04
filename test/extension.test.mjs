@@ -110,6 +110,20 @@ test("compacts a large context on resume after the cache expired", async () => {
 	assert.match(state.status, /compacted 200k→20k/);
 });
 
+test("does not pre-compact Fusion Standard on idle resume, but explicit force still works", async () => {
+	const pi = makeFakePi();
+	smartCompaction(pi);
+	const { ctx, state } = makeCtx({ tokens: 200_000, provider: "copilot-fusion", id: "standard", promptCache: null });
+	ctx.sessionManager.getBranch = () => oldAssistantBranch(24 * 3600_000);
+	await fire(pi, "session_start", ctx);
+	assert.match(state.status, /manual · Fusion routing/);
+	const result = await fireInput(pi, { text: "continue", source: "interactive" }, ctx);
+	assert.deepEqual(result, { action: "continue" });
+	assert.equal(state.compactCalls, 0);
+	await pi.commands.get("smart-compaction").handler("force", ctx);
+	assert.equal(state.compactCalls, 1);
+});
+
 test("does not compact while the cache is still warm", async () => {
 	const pi = makeFakePi();
 	smartCompaction(pi);

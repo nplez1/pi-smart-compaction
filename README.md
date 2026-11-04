@@ -60,7 +60,10 @@ On every user input, while the session is idle, the extension compacts first if
 | Time since the last request | `≥` cache lifetime | see [idle threshold](#the-idle-threshold) |
 
 Compaction itself is pi's own default path — the extension does not override the
-summarizer, keep-window, or summary format.
+summarizer, keep-window, or summary format. The automatic input gate skips
+`copilot-fusion/standard`: Fusion has not selected a physical model when this
+gate runs, so compacting there could discard context unnecessarily. Explicit
+`/smart-compaction force` and `/compact` remain available.
 
 A transcript notice is written when it runs:
 
